@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Personal configs (use config.example.sh as template)
+config.sh
+.config/
+
+# Backups
+dock_backup_*/
+*.plist.bak
+
+# Build / cache
+.dock_folder_icons/
+*.pyc
+__pycache__/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
