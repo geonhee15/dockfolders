@@ -15,6 +15,14 @@ enum DockManager {
 
     typealias Tile = [String: Any]
 
+    /// One item of the Dock's left-hand section, resolved and ready to be written.
+    enum PinnedEntry {
+        case app(InstalledApp)
+        case spacer(small: Bool)
+        /// An item we could not resolve to an installed app: its existing Dock tile is kept as-is.
+        case keep(path: String)
+    }
+
     // MARK: Reading
 
     static func readTiles(_ key: String) -> [Tile] {
@@ -42,6 +50,23 @@ enum DockManager {
         guard let p = path(of: tile) else { return false }
         let r = (root as NSString).standardizingPath
         return p == r || p.hasPrefix(r + "/")
+    }
+
+    /// The Dock's app section as config names, in Dock order: bundle file names for apps the catalog
+    /// knows, absolute paths for apps living elsewhere, and `PinnedToken`s for spacers.
+    /// Re-reads the domain first so changes made by dragging things in the Dock show up.
+    static func readPinned(catalog: AppCatalog?) -> [String] {
+        CFPreferencesAppSynchronize(domain as CFString)
+        return persistentApps.compactMap { tile in
+            switch tile["tile-type"] as? String {
+            case "spacer-tile": return PinnedToken.spacer
+            case "small-spacer-tile": return PinnedToken.smallSpacer
+            default:
+                guard let p = path(of: tile) else { return nil }
+                if let app = catalog?.installedApp(atPath: p) { return app.fileName }
+                return p
+            }
+        }
     }
 
     // MARK: Tiles
@@ -98,9 +123,9 @@ enum DockManager {
         Shell.run("/usr/bin/killall", ["Dock"], timeout: 10)
     }
 
-    /// Puts our folder tiles into the Dock, optionally replacing the app section with the favorites.
+    /// Puts our folder tiles into the Dock and, when `pinned` is given, replaces the app section with it.
     static func apply(folders: [(path: String, label: String, display: FolderDisplay)],
-                      favorites: [InstalledApp],
+                      pinned: [PinnedEntry]?,
                       settings: AppSettings,
                       log: (String) -> Void = { _ in }) throws {
         let root = settings.foldersDirectoryExpanded
@@ -117,16 +142,40 @@ enum DockManager {
         write(newOthers, to: "persistent-others")
         log("  ✓ \(folders.count) folder tile(s) (replaced \(before - others.count))")
 
-        // Left-hand section.
-        if settings.manageFavorites {
-            var apps = favorites.map(appTile)
-            if settings.useSpacer && !apps.isEmpty {
-                apps.append(spacerTile(small: settings.smallSpacer))
+        // Left-hand section. Tiles the Dock already has for an app are reused so the Dock keeps
+        // its own bookkeeping (GUIDs, bookmarks) for items that merely moved.
+        if let pinned {
+            let existing = persistentApps
+            var tiles: [Tile] = []
+            var appCount = 0
+            for entry in pinned {
+                switch entry {
+                case .app(let app):
+                    appCount += 1
+                    let std = (app.path as NSString).standardizingPath
+                    if let reuse = existing.first(where: { ($0["tile-type"] as? String) == "file-tile" && path(of: $0) == std }) {
+                        tiles.append(reuse)
+                    } else {
+                        tiles.append(appTile(app))
+                    }
+                case .spacer(let small):
+                    tiles.append(spacerTile(small: small))
+                case .keep(let p):
+                    let std = (p as NSString).standardizingPath
+                    if let reuse = existing.first(where: { path(of: $0) == std }) {
+                        tiles.append(reuse)
+                        appCount += 1
+                        log("  · kept Dock tile \((std as NSString).lastPathComponent)")
+                    } else {
+                        log("  ! dropped \((std as NSString).lastPathComponent) (not installed, not in the Dock)")
+                    }
+                }
             }
-            write(apps, to: "persistent-apps")
-            log("  ✓ \(favorites.count) favorite(s)\(settings.useSpacer && !apps.isEmpty ? " + spacer" : "")")
+            write(tiles, to: "persistent-apps")
+            let spacers = tiles.count - appCount
+            log("  ✓ \(appCount) pinned app(s)\(spacers > 0 ? " + \(spacers) spacer(s)" : "")")
         } else {
-            log("  · app section left untouched")
+            log("  · pinned apps left untouched")
         }
 
         try synchronize()

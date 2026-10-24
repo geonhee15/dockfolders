@@ -22,7 +22,7 @@ final class AppModel: ObservableObject {
     @Published var config: DockConfig {
         didSet {
             if config != oldValue {
-                currentHash = config.contentHash
+                currentHash = config.foldersHash
                 recomputeDerived()
                 scheduleSave()
             }
@@ -40,9 +40,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var backups: [URL] = []
     @Published private(set) var uncategorized: [InstalledApp] = []
     @Published private(set) var currentHash: String = ""
+    /// The pinned list was edited here and not yet written to the Dock.
+    @Published private(set) var pinnedPending = false
+    /// The Dock's pinned apps changed outside the app while this list also has unapplied edits.
+    @Published private(set) var pinnedConflict = false
+    /// What the Dock's app section held at the last sync.
+    @Published private(set) var dockPinned: [String] = []
 
     let loadSource: ConfigStore.LoadSource
     private var saveTask: Task<Void, Never>?
+    private var activationObserver: NSObjectProtocol?
 
     init() {
         let (cfg, source) = ConfigStore.load()
@@ -51,15 +58,21 @@ final class AppModel: ObservableObject {
         state = ConfigStore.loadState()
         catalog = AppCatalog()
         selection = cfg.folders.first.map { .folder($0.id) }
-        currentHash = cfg.contentHash
+        currentHash = cfg.foldersHash
         showOnboarding = cfg.folders.isEmpty && !state.onboarded
         refreshBackups()
         rescan()
+        // Changes made by dragging apps around in the Dock are picked up whenever the user comes back.
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.syncPinned() }
+        }
     }
 
     // MARK: Derived state
 
-    var hasUnappliedChanges: Bool { state.lastAppliedHash != currentHash }
+    var hasUnappliedChanges: Bool { state.lastAppliedHash != currentHash || pinnedPending }
 
     var lastAppliedDescription: String? {
         guard let d = state.lastAppliedAt else { return nil }
@@ -70,6 +83,7 @@ final class AppModel: ObservableObject {
 
     func recomputeDerived() {
         uncategorized = Organizer.uncategorizedFast(config: config, catalog: catalog)
+        pinnedPending = PinnedSync.hasPendingEdits(config: config, state: state, catalog: catalog)
     }
 
     func resolve(_ name: String) -> InstalledApp? {
@@ -108,6 +122,7 @@ final class AppModel: ObservableObject {
                 self.catalogVersion += 1
                 self.isScanning = false
                 self.recomputeDerived()
+                self.syncPinned()
             }
         }
     }
@@ -190,7 +205,7 @@ final class AppModel: ObservableObject {
         addFolder(name: app.displayName, apps: [app.fileName])
     }
 
-    // MARK: Favorites
+    // MARK: Pinned apps (the Dock's left-hand section)
 
     func addFavorites(_ names: [String]) {
         for n in names where !config.favorites.contains(where: { $0.caseInsensitiveCompare(n) == .orderedSame }) {
@@ -198,19 +213,59 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func removeFavorites(_ names: Set<String>) {
-        config.favorites.removeAll { names.contains($0) }
+    func addSpacer(small: Bool) {
+        config.favorites.append(small ? PinnedToken.smallSpacer : PinnedToken.spacer)
+    }
+
+    func removePinned(at offsets: IndexSet) {
+        config.favorites.remove(atOffsets: IndexSet(offsets.filter { $0 < config.favorites.count }))
+    }
+
+    func toggleSpacerSize(at index: Int) {
+        guard config.favorites.indices.contains(index), PinnedToken.isSpacer(config.favorites[index]) else { return }
+        config.favorites[index] = config.favorites[index] == PinnedToken.spacer ? PinnedToken.smallSpacer : PinnedToken.spacer
     }
 
     func moveFavorites(from: IndexSet, to: Int) {
         config.favorites.move(fromOffsets: from, toOffset: to)
     }
 
+    /// Pull in what the user did in the Dock itself (unless the list was edited here as well).
+    func syncPinned() {
+        guard catalogVersion > 0, !progress.isRunning else { return }
+        var cfg = config
+        var st = state
+        let out = PinnedSync.reconcile(config: &cfg, state: &st, catalog: catalog)
+        if cfg != config { config = cfg }
+        if st.pinnedBaseline != state.pinnedBaseline {
+            state = st
+            ConfigStore.saveState(state)
+        }
+        dockPinned = out.dock
+        pinnedConflict = out.conflict
+        recomputeDerived()
+    }
+
+    /// Replace this list with the Dock's current one, dropping edits made here.
+    func adoptPinnedFromDock() {
+        guard catalogVersion > 0 else { return }
+        var cfg = config
+        var st = state
+        dockPinned = PinnedSync.adopt(config: &cfg, state: &st, catalog: catalog)
+        config = cfg
+        state = st
+        ConfigStore.saveState(state)
+        pinnedConflict = false
+        recomputeDerived()
+    }
+
     // MARK: Presets / import / export
 
+    /// Presets bring folders; the pinned apps stay whatever the Dock has unless that section is empty.
     func loadPreset(_ preset: Preset, replace: Bool) {
-        let fresh = preset.makeConfig(keeping: config.settings)
+        var fresh = preset.makeConfig(keeping: config.settings)
         if replace {
+            if !config.favorites.isEmpty { fresh.favorites = config.favorites }
             config = fresh
         } else {
             let offset = config.folders.count
@@ -219,7 +274,7 @@ final class AppModel: ObservableObject {
                 f.icon = IconSpec(emoji: f.icon.emoji, palette: offset + i)
                 return f
             })
-            addFavorites(fresh.favorites)
+            if config.favorites.isEmpty { addFavorites(fresh.favorites) }
         }
         selection = config.folders.first.map { .folder($0.id) }
         state.onboarded = true
@@ -255,9 +310,13 @@ final class AppModel: ObservableObject {
     // MARK: Dock actions
 
     func apply() {
-        guard !progress.isRunning else { return }
+        // The catalog must be in so the pinned list can be synced with the Dock before writing.
+        guard !progress.isRunning, catalogVersion > 0 else { return }
         let problems = config.problems
         if !problems.isEmpty { alertMessage = problems.joined(separator: "\n"); return }
+        // Anything rearranged in the Dock since we last looked is adopted first, so applying never
+        // undoes it (unless this list was edited here too — then this list wins).
+        syncPinned()
         saveNow()
         let cfg = config
         let cat = catalog
@@ -272,9 +331,15 @@ final class AppModel: ObservableObject {
                     self.progress.report = report
                     self.progress.isRunning = false
                     self.progress.title = L("Applied to Dock")
-                    self.state.lastAppliedHash = cfg.contentHash
+                    self.state.lastAppliedHash = cfg.foldersHash
                     self.state.lastAppliedAt = Date()
+                    if cfg.settings.manageFavorites {
+                        PinnedSync.markApplied(config: cfg, state: &self.state, catalog: cat)
+                    }
                     ConfigStore.saveState(self.state)
+                    self.pinnedConflict = false
+                    self.dockPinned = cfg.favorites
+                    self.recomputeDerived()
                     self.refreshBackups()
                     self.catalogVersion += 1
                 }
@@ -333,6 +398,7 @@ final class AppModel: ObservableObject {
             try DockManager.restore(from: url, restart: config.settings.restartDock)
             state.lastAppliedHash = nil
             ConfigStore.saveState(state)
+            syncPinned()
         } catch { alertMessage = error.localizedDescription }
     }
 
@@ -366,7 +432,7 @@ extension Organizer {
     /// Like `uncategorized` but never hits Spotlight (safe on the main thread).
     static func uncategorizedFast(config: DockConfig, catalog: AppCatalog) -> [InstalledApp] {
         var referenced = Set<String>()
-        for name in config.folders.flatMap(\.apps) + config.favorites {
+        for name in config.folders.flatMap(\.apps) + config.pinnedAppNames {
             if let app = catalog.find(name, spotlight: false) { referenced.insert(app.path) }
         }
         return catalog.apps.filter { !referenced.contains($0.path) }

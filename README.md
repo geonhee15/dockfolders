@@ -49,6 +49,8 @@ dockfolders                     # GUI 열기
 dockfolders preset developer    # 프리셋 적용
 dockfolders apply               # Dock에 적용
 dockfolders discover            # 어느 폴더에도 없는 앱 보기
+dockfolders pinned              # Dock의 고정 앱과 설정 비교
+dockfolders pinned --from-dock  # Dock의 고정 앱을 설정으로 가져오기
 dockfolders reset               # 마지막 백업으로 Dock 복원
 dockfolders remove              # Dock에서 폴더 빼기
 dockfolders help
@@ -60,7 +62,7 @@ dockfolders help
 - **적용 상태 배지** — 설정을 바꾸면 "적용 안 된 변경"으로 표시됩니다.
 - **백업/복원** — 적용할 때마다 Dock 스냅샷을 저장하고, 앱 안에서 바로 되돌릴 수 있습니다.
 - **기존 Dock 항목 보존** — 다운로드 폴더 등 직접 넣어둔 항목은 그대로 둡니다 (설정에서 변경 가능).
-- **즐겨찾기** — Dock 왼쪽에 고정할 앱과 구분선(스페이서)을 관리합니다. 관리하지 않도록 끌 수도 있어요.
+- **고정 앱** — Dock 왼쪽의 고정 앱 영역은 Dock을 그대로 따라갑니다. Dock에서 직접 끌어 바꾼 것은 자동으로 반영되고, 앱 안에서 순서와 구분선(스페이서)을 편집해 적용할 수도 있어요. 건드리지 않도록 끌 수도 있습니다.
 - **폴더별 Dock 표시** — 격자/부채꼴/목록, 폴더/스택, 정렬 기준을 폴더마다 다르게 설정할 수 있습니다.
 - **JSON 설정** — `~/.config/dockfolders/config.json`. 내보내기/가져오기 지원, v1 `config.sh` 가져오기 지원.
 - **한국어 UI** — 시스템 언어가 한국어면 자동으로 한국어로 표시됩니다.
@@ -69,7 +71,7 @@ dockfolders help
 
 1. `~/Applications/DockFolders/<폴더>/` 안에 앱의 심볼릭 링크를 만듭니다.
 2. 아이콘을 CoreGraphics로 16–1024px 멀티 해상도로 렌더링해 `NSWorkspace`로 폴더에 적용합니다.
-3. `com.apple.dock` 환경설정에 폴더 타일(과 즐겨찾기)을 직접 써넣고 Dock을 재시작합니다.
+3. `com.apple.dock` 환경설정에 폴더 타일(과 고정 앱)을 직접 써넣고 Dock을 재시작합니다.
 
 ---
 
@@ -110,6 +112,8 @@ dockfolders preset developer    # load a preset
 dockfolders apply               # build folders + icons, update the Dock
 dockfolders discover            # list apps that are in no folder
 dockfolders list                # show the config
+dockfolders pinned              # compare the Dock's pinned apps with the config
+dockfolders pinned --from-dock  # adopt the Dock's pinned apps into the config
 dockfolders reset               # restore the Dock from the latest backup
 dockfolders backups             # list Dock backups
 dockfolders remove              # take the folders out of the Dock
@@ -124,7 +128,7 @@ dockfolders help
 - **Status badge** — the toolbar shows whether the Dock matches the config ("Unapplied changes").
 - **Backups** — a Dock snapshot is taken before every change; restore any of them from the app.
 - **Keeps your other Dock items** — Downloads and other tiles you added yourself stay (configurable).
-- **Favorites** — manage the pinned apps on the left of the Dock and the spacer, or leave that section alone.
+- **Pinned apps** — the left-hand section of the Dock is mirrored: whatever you rearrange in the Dock itself is picked up automatically, and you can reorder apps and spacers in the app and apply. Or leave that section alone.
 - **Per-folder Dock display** — grid/fan/list, folder/stack, sort order; globally or per folder.
 - **JSON config** — `~/.config/dockfolders/config.json`, import/export, v1 `config.sh` importer.
 - **Localized** — English and Korean.
@@ -147,23 +151,23 @@ Everything is editable in the app, but the file is plain JSON:
       }
     }
   ],
-  "favorites": ["Cursor", "Google Chrome"],
+  "favorites": ["Cursor", "Google Chrome", "<spacer>", "Claude"],
   "settings": {
     "foldersDirectory": "~/Applications/DockFolders",
     "backupDirectory": "~/.config/dockfolders/backups",
-    "manageFavorites": true, "useSpacer": true,
+    "manageFavorites": true,
     "keepOtherDockItems": true, "numberPrefix": false
   }
 }
 ```
 
-App names match the bundle file name (`Visual Studio Code`), the localized display name, a bundle id, or an absolute path. Apps that aren't installed are skipped.
+App names match the bundle file name (`Visual Studio Code`), the localized display name, a bundle id, or an absolute path. Apps that aren't installed are skipped. `favorites` is the Dock's pinned section in order; `"<spacer>"` and `"<small-spacer>"` stand for the Dock's spacer tiles.
 
 ### How it works
 
 1. Creates `~/Applications/DockFolders/<Folder>/` with symlinks to the apps (stale folders that only contain symlinks are cleaned up).
 2. Renders each icon with CoreGraphics at 16–1024 px and applies it with `NSWorkspace.setIcon`.
-3. Writes the folder tiles (and optionally the favorites) straight into the `com.apple.dock` preferences and restarts the Dock.
+3. Writes the folder tiles (and the pinned apps, unless turned off) straight into the `com.apple.dock` preferences and restarts the Dock.
 
 ### Building
 

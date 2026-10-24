@@ -15,9 +15,13 @@ struct InstalledApp: Identifiable, Hashable {
 
     /// Case-insensitive match against file name, display name, bundle id or path.
     func matches(_ query: String) -> Bool {
-        let q = query.trimmed.strippingAppExtension
-        if q.isEmpty { return false }
-        if q.hasPrefix("/") { return Paths.expand(q) == path }
+        let raw = query.trimmed
+        if raw.isEmpty { return false }
+        if raw.hasPrefix("/") || raw.hasPrefix("~") {
+            let p = Paths.expand(raw)
+            return p == path || p + ".app" == path
+        }
+        let q = raw.strippingAppExtension
         if fileName.caseInsensitiveCompare(q) == .orderedSame { return true }
         if displayName.caseInsensitiveCompare(q) == .orderedSame { return true }
         if let b = bundleID, b.caseInsensitiveCompare(q) == .orderedSame { return true }

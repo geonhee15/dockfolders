@@ -51,7 +51,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("r", modifiers: .command)
-                .disabled(model.progress.isRunning || model.config.folders.isEmpty)
+                .disabled(model.progress.isRunning || model.config.folders.isEmpty || model.catalogVersion == 0)
                 .help(L("Create the folders, render icons and update the Dock (⌘R)"))
             }
         }
@@ -77,7 +77,7 @@ struct DetailView: View {
             } else {
                 placeholder
             }
-        case .favorites: FavoritesView()
+        case .favorites: PinnedAppsView()
         case .discover: DiscoverView()
         case .backups: BackupsView()
         case nil: placeholder
@@ -122,9 +122,9 @@ struct SidebarView: View {
                 }
             }
             Section(L("Dock")) {
-                Label(L("Favorites"), systemImage: "star")
+                Label(L("Pinned Apps"), systemImage: "pin")
                     .tag(SidebarItem.favorites)
-                    .badge(model.config.settings.manageFavorites ? model.config.favorites.count : 0)
+                    .badge(model.config.pinnedAppNames.count)
                 Label(L("Uncategorized"), systemImage: "tray")
                     .tag(SidebarItem.discover)
                     .badge(model.uncategorized.count)

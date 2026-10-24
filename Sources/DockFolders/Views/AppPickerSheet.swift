@@ -27,7 +27,7 @@ struct AppPickerSheet: View {
     private var title: String {
         switch mode {
         case .folder(let id): return "\(L("Add apps to")) “\(model.config.folder(id)?.name ?? "")”"
-        case .favorites: return L("Add favorites")
+        case .favorites: return L("Add pinned apps")
         }
     }
 
@@ -89,7 +89,7 @@ struct AppPickerSheet: View {
     private func locationText(for app: InstalledApp) -> String {
         let folders = model.config.folders.filter { f in f.apps.contains { model.resolve($0)?.path == app.path } }
         if !folders.isEmpty { return "\(L("In")): " + folders.map(\.name).joined(separator: ", ") }
-        if model.config.favorites.contains(where: { model.resolve($0)?.path == app.path }) { return L("In favorites") }
+        if model.config.favorites.contains(where: { model.resolve($0)?.path == app.path }) { return L("Pinned in the Dock") }
         return Paths.abbreviate((app.path as NSString).deletingLastPathComponent)
     }
 

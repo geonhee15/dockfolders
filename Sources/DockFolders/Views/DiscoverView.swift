@@ -44,7 +44,7 @@ struct DiscoverView: View {
                                 }
                             }
                             if !model.config.folders.isEmpty { Divider() }
-                            Button(L("Favorites")) { model.addFavorites([app.fileName]) }
+                            Button(L("Pinned Apps")) { model.addFavorites([app.fileName]) }
                             Button(L("New Folder with This App")) { model.newFolder(withApp: app) }
                             Divider()
                             Button(L("Reveal in Finder")) { model.reveal(app: app) }

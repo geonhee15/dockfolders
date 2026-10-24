@@ -11,6 +11,7 @@ enum ConfigStore {
                 let data = try Data(contentsOf: Paths.configFile)
                 var cfg = try JSONDecoder().decode(DockConfig.self, from: data)
                 cfg.version = DockConfig.currentVersion
+                if cfg.migrateLegacySpacer() { try? save(cfg) }
                 return (cfg, .json)
             } catch {
                 // Keep a copy of the unreadable file so nothing is lost, then fall through.
@@ -28,7 +29,9 @@ enum ConfigStore {
 
     static func load(from url: URL) throws -> DockConfig {
         let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(DockConfig.self, from: data)
+        var cfg = try JSONDecoder().decode(DockConfig.self, from: data)
+        cfg.migrateLegacySpacer()
+        return cfg
     }
 
     static func save(_ config: DockConfig) throws {

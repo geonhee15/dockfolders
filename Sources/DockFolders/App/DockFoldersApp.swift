@@ -29,7 +29,7 @@ struct DockFoldersApp: App {
             CommandMenu(L("Dock")) {
                 Button(L("Apply to Dock")) { model.apply() }
                     .keyboardShortcut("r", modifiers: .command)
-                    .disabled(model.progress.isRunning)
+                    .disabled(model.progress.isRunning || model.catalogVersion == 0)
                 Button(L("Rescan Applications")) { model.rescan() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                 Divider()
@@ -53,7 +53,7 @@ struct DockFoldersApp: App {
 enum UISnapshot {
     static func run(_ args: [String]) -> Int32 {
         guard let out = args.first else {
-            print("Usage: --snapshot-ui <out.png> [folder|sidebar|icon|favorites|discover|backups|settings|onboarding|picker|progress]")
+            print("Usage: --snapshot-ui <out.png> [folder|sidebar|icon|pinned|discover|backups|settings|onboarding|picker|progress]")
             return 1
         }
         let which = args.count > 1 ? args[1] : "folder"
@@ -91,7 +91,7 @@ enum UISnapshot {
                     RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
                 }
                 root = AnyView(ProgressSheet())
-            case "favorites": model.selection = .favorites; root = AnyView(ContentView())
+            case "favorites", "pinned": model.selection = .favorites; root = AnyView(ContentView())
             case "discover": model.selection = .discover; root = AnyView(ContentView())
             case "backups": model.selection = .backups; root = AnyView(ContentView())
             default: root = AnyView(ContentView())

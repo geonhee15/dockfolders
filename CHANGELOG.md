@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.0 — 2026-10-24
+
+### Changed
+- **Pinned apps follow the Dock.** The left-hand section of the Dock is no longer overwritten on every apply. DockFolders reads what is pinned, adopts changes made by dragging apps in the Dock itself, and writes the list back only when it was edited in the app. If both changed, the app says so and offers the Dock's list.
+- "Favorites" is now "Pinned Apps" in the UI and CLI output; the JSON key stays `favorites`.
+- Presets no longer replace the pinned apps unless that section of the Dock is empty.
+
+### Added
+- Spacers are items of the pinned list (`"<spacer>"`, `"<small-spacer>"`): add, move and remove them like apps. The old `useSpacer`/`smallSpacer` settings are migrated automatically.
+- `dockfolders pinned` shows the Dock's pinned apps next to the config's; `dockfolders pinned --from-dock` adopts the Dock's.
+- "Reload from Dock" in the Pinned Apps view.
+
+### Fixed
+- Apps that are symlinks in /Applications (Safari on recent macOS, Homebrew casks) are found by the catalog and no longer reported as "not installed" or dropped from the Dock.
+- Dock tiles that cannot be resolved to an installed app are kept instead of removed.
+- Existing Dock tiles are reused when the pinned section is rewritten, so the Dock keeps its bookkeeping for apps that merely moved.
+
 ## 2.0.0 — 2026-10-24
 
 Complete rewrite as a native macOS app (SwiftUI + AppKit), no external dependencies.

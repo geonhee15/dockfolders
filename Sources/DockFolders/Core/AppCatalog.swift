@@ -5,6 +5,7 @@ import AppKit
 final class AppCatalog {
     private(set) var apps: [InstalledApp] = []
     private var byLowerName: [String: InstalledApp] = [:]
+    private var byPath: [String: InstalledApp] = [:]
     private var negativeCache = Set<String>()
     private let iconCache = NSCache<NSString, NSImage>()
     private let lock = NSLock()
@@ -34,19 +35,25 @@ final class AppCatalog {
         lock.lock(); defer { lock.unlock() }
         apps = list.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         byLowerName = [:]
+        byPath = [:]
         for app in apps {
             byLowerName[app.fileName.lowercased()] = byLowerName[app.fileName.lowercased()] ?? app
             byLowerName[app.displayName.lowercased()] = byLowerName[app.displayName.lowercased()] ?? app
             if let b = app.bundleID { byLowerName[b.lowercased()] = byLowerName[b.lowercased()] ?? app }
+            byPath[app.path] = app
         }
         negativeCache.removeAll()
     }
 
     // MARK: Scanning
 
+    /// Walks the search roots. Symlinks to app bundles count as apps at the link's path (Safari lives
+    /// in a cryptex behind `/Applications/Safari.app`; Homebrew casks link into /Applications too);
+    /// a bundle reachable under two paths is listed once, under the first path found.
     static func scan(excluding foldersDirectory: String? = nil) -> [InstalledApp] {
         let fm = FileManager.default
         var found: [String: InstalledApp] = [:]
+        var seenReal = Set<String>()
         let excluded = foldersDirectory.map { Paths.expand($0) }
 
         func visit(_ dir: String, depth: Int) {
@@ -56,11 +63,14 @@ final class AppCatalog {
                 if let ex = excluded, path == ex || path.hasPrefix(ex + "/") { continue }
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
-                if let attrs = try? fm.attributesOfItem(atPath: path),
-                   (attrs[.type] as? FileAttributeType) == .typeSymbolicLink { continue }
+                let isLink = (try? fm.attributesOfItem(atPath: path))
+                    .map { ($0[.type] as? FileAttributeType) == .typeSymbolicLink } ?? false
                 if item.hasSuffix(".app") {
+                    let real = (path as NSString).resolvingSymlinksInPath
+                    guard !seenReal.contains(real) else { continue }
+                    seenReal.insert(real)
                     if found[path] == nil, let app = describe(path) { found[path] = app }
-                } else if depth < 2 {
+                } else if depth < 2, !isLink {
                     visit(path, depth: depth + 1)
                 }
             }
@@ -88,13 +98,17 @@ final class AppCatalog {
 
     /// Resolve a config name to an installed app. Falls back to Spotlight for apps living elsewhere.
     func find(_ query: String, spotlight: Bool = true) -> InstalledApp? {
-        let q = query.trimmed.strippingAppExtension
-        guard !q.isEmpty else { return nil }
-        if q.hasPrefix("/") || q.hasPrefix("~") {
-            let p = Paths.expand(q)
-            if FileManager.default.fileExists(atPath: p) { return AppCatalog.describe(p) }
+        let raw = query.trimmed
+        guard !raw.isEmpty else { return nil }
+        if raw.hasPrefix("/") || raw.hasPrefix("~") {
+            let p = Paths.expand(raw)
+            for candidate in [p, p.hasSuffix(".app") ? nil : p + ".app"].compactMap({ $0 })
+            where FileManager.default.fileExists(atPath: candidate) {
+                return installedApp(atPath: candidate) ?? AppCatalog.describe(candidate)
+            }
             return nil
         }
+        let q = raw.strippingAppExtension
         lock.lock()
         let cached = byLowerName[q.lowercased()]
         let negative = negativeCache.contains(q.lowercased())
@@ -131,7 +145,17 @@ final class AppCatalog {
     }
 
     func app(atPath path: String) -> InstalledApp? {
-        apps.first { $0.path == path } ?? AppCatalog.describe(path)
+        installedApp(atPath: path) ?? AppCatalog.describe(path)
+    }
+
+    /// Only apps found by the scan (nil for bundles living outside the search roots). Accepts either
+    /// the scanned path or the path it resolves to.
+    func installedApp(atPath path: String) -> InstalledApp? {
+        let std = (path as NSString).standardizingPath
+        lock.lock(); defer { lock.unlock() }
+        if let hit = byPath[std] { return hit }
+        let real = (std as NSString).resolvingSymlinksInPath
+        return apps.first { ($0.path as NSString).resolvingSymlinksInPath == real }
     }
 
     // MARK: Icons

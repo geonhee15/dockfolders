@@ -22,7 +22,7 @@ enum LegacyImporter {
         if categories.isEmpty {
             throw ImportError(message: "No CATEGORIES=( ... ) block found. Is this a DockFolders v1 config.sh?")
         }
-        let favorites = arrayValues(named: "FAVORITES", in: text)
+        var favorites = arrayValues(named: "FAVORITES", in: text)
 
         var folders: [DockFolder] = []
         for (i, entry) in categories.enumerated() {
@@ -43,9 +43,8 @@ enum LegacyImporter {
         if let dir = scalarValue(named: "DOCK_FOLDERS_DIR", in: text) {
             settings.foldersDirectory = Paths.abbreviate(Paths.expand(dir))
         }
-        if let spacer = scalarValue(named: "USE_SPACER", in: text) {
-            settings.useSpacer = spacer.lowercased() != "false"
-        }
+        let useSpacer = scalarValue(named: "USE_SPACER", in: text).map { $0.lowercased() != "false" } ?? true
+        if useSpacer, !favorites.isEmpty { favorites.append(PinnedToken.spacer) }
         // v1 wrote backups to the Desktop; keep the new tidy default unless the user customised it.
         if let backup = scalarValue(named: "BACKUP_DIR", in: text), !backup.contains("Desktop") {
             settings.backupDirectory = Paths.abbreviate(Paths.expand(backup))

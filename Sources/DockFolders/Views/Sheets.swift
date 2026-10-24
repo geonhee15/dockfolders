@@ -77,7 +77,7 @@ struct ProgressSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !report.missingFavorites.isEmpty {
-                    Text("• \(L("Favorites")): \(report.missingFavorites.joined(separator: ", "))")
+                    Text("• \(L("Pinned apps")): \(report.missingFavorites.joined(separator: ", "))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !report.iconFailures.isEmpty {

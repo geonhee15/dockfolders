@@ -64,13 +64,23 @@ struct DockFolder: Hashable, Codable, Identifiable {
     }
 }
 
+/// The Dock's left-hand section (`DockConfig.favorites`) is a list of app names plus these two
+/// reserved tokens for the gaps the Dock calls spacer tiles.
+enum PinnedToken {
+    static let spacer = "<spacer>"
+    static let smallSpacer = "<small-spacer>"
+
+    static func isSpacer(_ s: String) -> Bool { s == spacer || s == smallSpacer }
+}
+
 struct AppSettings: Hashable, Codable {
     /// Where the symlink folders live (what the Dock points at).
     var foldersDirectory: String = Paths.defaultFoldersDir
     var backupDirectory: String = Paths.defaultBackupDir
-    /// Replace the Dock's app section with `favorites`.
+    /// Write `favorites` to the Dock's app section when applying. When off the list only mirrors the Dock.
     var manageFavorites: Bool = true
-    var useSpacer: Bool = true
+    /// Legacy (≤ 2.0): one spacer after the pinned apps. Migrated into a `PinnedToken` on load, never saved again.
+    var useSpacer: Bool = false
     var smallSpacer: Bool = false
     /// Keep Dock items we did not create (Downloads, other folders) in the right-hand section.
     var keepOtherDockItems: Bool = true
@@ -102,6 +112,19 @@ struct AppSettings: Hashable, Codable {
         maxBackups = c.decode(.maxBackups, default: d.maxBackups)
     }
 
+    /// The legacy spacer flags are read for migration but not written back.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(foldersDirectory, forKey: .foldersDirectory)
+        try c.encode(backupDirectory, forKey: .backupDirectory)
+        try c.encode(manageFavorites, forKey: .manageFavorites)
+        try c.encode(keepOtherDockItems, forKey: .keepOtherDockItems)
+        try c.encode(numberPrefix, forKey: .numberPrefix)
+        try c.encode(restartDock, forKey: .restartDock)
+        try c.encode(defaultDisplay, forKey: .defaultDisplay)
+        try c.encode(maxBackups, forKey: .maxBackups)
+    }
+
     var foldersDirectoryExpanded: String { Paths.expand(foldersDirectory) }
     var backupDirectoryExpanded: String { Paths.expand(backupDirectory) }
 }
@@ -112,6 +135,7 @@ struct DockConfig: Hashable, Codable {
 
     var version: Int = DockConfig.currentVersion
     var folders: [DockFolder] = []
+    /// The Dock's left-hand app section, in order: app names and `PinnedToken`s. See `PinnedSync`.
     var favorites: [String] = []
     var settings: AppSettings = AppSettings()
 
@@ -130,13 +154,35 @@ struct DockConfig: Hashable, Codable {
         settings = c.decode(.settings, default: AppSettings())
     }
 
-    /// Stable fingerprint used to tell whether the Dock reflects this config.
+    /// Turns the ≤ 2.0 "spacer after favorites" setting into a list item. Returns true when something changed.
+    @discardableResult
+    mutating func migrateLegacySpacer() -> Bool {
+        guard settings.useSpacer || settings.smallSpacer else { return false }
+        if settings.useSpacer, !favorites.isEmpty, !PinnedToken.isSpacer(favorites.last ?? "") {
+            favorites.append(settings.smallSpacer ? PinnedToken.smallSpacer : PinnedToken.spacer)
+        }
+        settings.useSpacer = false
+        settings.smallSpacer = false
+        return true
+    }
+
+    /// Stable fingerprint of the whole config.
     var contentHash: String {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
         guard let data = try? enc.encode(self) else { return UUID().uuidString }
         return String(decoding: data, as: UTF8.self).sha256Hex
     }
+
+    /// Fingerprint of everything except the pinned apps, which are tracked against the Dock itself.
+    var foldersHash: String {
+        var copy = self
+        copy.favorites = []
+        return copy.contentHash
+    }
+
+    /// The pinned list without spacer tokens.
+    var pinnedAppNames: [String] { favorites.filter { !PinnedToken.isSpacer($0) } }
 
     func folder(_ id: UUID) -> DockFolder? { folders.first { $0.id == id } }
 
@@ -170,17 +216,22 @@ struct DockConfig: Hashable, Codable {
 
 /// Persisted runtime state (separate from the config so it never dirties it).
 struct AppState: Codable {
+    /// `DockConfig.foldersHash` at the last successful apply.
     var lastAppliedHash: String? = nil
     var lastAppliedAt: Date? = nil
     var onboarded: Bool = false
+    /// The pinned list (normalized: app paths and spacer tokens) the Dock and the config last agreed on.
+    /// `nil` until the first sync, when the Dock's current list is adopted.
+    var pinnedBaseline: [String]? = nil
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case lastAppliedHash, lastAppliedAt, onboarded }
+    enum CodingKeys: String, CodingKey { case lastAppliedHash, lastAppliedAt, onboarded, pinnedBaseline }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         lastAppliedHash = c.decode(.lastAppliedHash, default: nil)
         lastAppliedAt = c.decode(.lastAppliedAt, default: nil)
         onboarded = c.decode(.onboarded, default: false)
+        pinnedBaseline = c.decode(.pinnedBaseline, default: nil)
     }
 }

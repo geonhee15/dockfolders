@@ -4,7 +4,7 @@ import AppKit
 /// Terminal front-end. The same binary that runs the GUI handles `dockfolders <command>`.
 enum CLI {
     static let commands: Set<String> = [
-        "apply", "organize", "reset", "restore", "discover", "list", "preset", "import", "backup", "backups",
+        "apply", "organize", "reset", "restore", "discover", "list", "pinned", "preset", "import", "backup", "backups",
         "remove", "render-icon", "export", "help", "--help", "-h", "version", "--version", "-v",
         "--render-app-icon", "--snapshot-ui",
     ]
@@ -32,6 +32,7 @@ enum CLI {
             case "reset", "restore": return try cmdRestore(args)
             case "discover": return cmdDiscover()
             case "list": return cmdList()
+            case "pinned": return try cmdPinned(args)
             case "preset": return try cmdPreset(args)
             case "import": return try cmdImport(args)
             case "backup": return try cmdBackup()
@@ -52,12 +53,13 @@ enum CLI {
 
     // MARK: Commands
 
-    static func loadConfig(_ args: inout [String]) throws -> DockConfig {
+    /// Loads the config; `--config F` reads an explicit file instead (returned as `explicit`).
+    static func loadConfig(_ args: inout [String]) throws -> (config: DockConfig, explicit: Bool) {
         if let i = args.firstIndex(of: "--config"), i + 1 < args.count {
             let url = URL(fileURLWithPath: Paths.expand(args[i + 1]))
             args.removeSubrange(i...(i + 1))
-            if url.pathExtension == "sh" { return try LegacyImporter.importConfig(at: url) }
-            return try ConfigStore.load(from: url)
+            if url.pathExtension == "sh" { return (try LegacyImporter.importConfig(at: url), true) }
+            return (try ConfigStore.load(from: url), true)
         }
         let (cfg, source) = ConfigStore.load()
         switch source {
@@ -65,26 +67,52 @@ enum CLI {
         case .fresh: print(yellow("ℹ") + " No config yet. Open the app, or run: dockfolders preset <name>")
         case .json: break
         }
-        return cfg
+        return (cfg, false)
+    }
+
+    /// Bring the pinned list in step with the Dock before touching it (see `PinnedSync`). Saves what changed.
+    @discardableResult
+    static func syncPinned(_ config: inout DockConfig, catalog: AppCatalog, quiet: Bool = false) -> PinnedSync.Outcome {
+        var state = ConfigStore.loadState()
+        let out = PinnedSync.reconcile(config: &config, state: &state, catalog: catalog)
+        ConfigStore.saveState(state)
+        if out.adopted { try? ConfigStore.save(config) }
+        if !quiet {
+            if out.adopted {
+                print(yellow("ℹ") + " Pinned apps updated from the Dock (\(config.pinnedAppNames.count) apps)")
+            }
+            if out.conflict {
+                print(yellow("⚠") + " The Dock's pinned apps changed since the last sync and the config was edited too — the config wins."
+                      + dim("  (dockfolders pinned --from-dock takes the Dock's list instead)"))
+            }
+        }
+        return out
     }
 
     static func cmdApply(_ argsIn: [String]) throws -> Int32 {
         var args = argsIn
-        let config = try loadConfig(&args)
+        var (config, explicit) = try loadConfig(&args)
         if config.folders.isEmpty {
             print(red("✗") + " No folders defined. Try: dockfolders preset developer")
             return 1
         }
         banner()
         let catalog = AppCatalog.scanned(excluding: config.settings.foldersDirectory)
+        if !explicit { syncPinned(&config, catalog: catalog) }
         let report = try Organizer.apply(config: config, catalog: catalog) { print(colorize($0)) }
         var state = ConfigStore.loadState()
-        state.lastAppliedHash = config.contentHash
+        state.lastAppliedHash = config.foldersHash
         state.lastAppliedAt = Date()
+        if config.settings.manageFavorites {
+            PinnedSync.markApplied(config: config, state: &state, catalog: catalog)
+        }
         ConfigStore.saveState(state)
         if !report.missingApps.isEmpty {
             print("\n" + yellow("Not installed (skipped):"))
             for m in report.missingApps { print("  \(m.folder): \(m.apps.joined(separator: ", "))") }
+        }
+        if !report.missingFavorites.isEmpty {
+            print(yellow("Pinned apps not installed (skipped): ") + report.missingFavorites.joined(separator: ", "))
         }
         print("\n" + dim("Undo: dockfolders reset"))
         return 0
@@ -104,6 +132,9 @@ enum CLI {
         }
         print("Restoring \(Paths.abbreviate(url.path))")
         try DockManager.restore(from: url)
+        var state = ConfigStore.loadState()
+        state.lastAppliedHash = nil
+        ConfigStore.saveState(state)
         print(green("✓") + " Dock restored")
         return 0
     }
@@ -129,18 +160,61 @@ enum CLI {
             print("  \(glyph) " + bold(f.diskName(index: i, numberPrefix: config.settings.numberPrefix)) + dim("  \(f.apps.count) apps"))
             print("     " + dim(f.apps.joined(separator: ", ")))
         }
-        print(bold("Favorites") + (config.settings.manageFavorites ? "" : dim("  (not managed)")))
-        print("  " + config.favorites.joined(separator: ", "))
+        print(bold("Pinned apps") + (config.settings.manageFavorites ? "" : dim("  (not written to the Dock)")))
+        print("  " + (config.favorites.isEmpty ? dim("(none)") : config.favorites.map(PinnedSync.describe).joined(separator: ", ")))
         return 0
     }
 
+    /// `pinned` shows the Dock's left-hand section next to the config's; `--from-dock` adopts the Dock's.
+    static func cmdPinned(_ args: [String]) throws -> Int32 {
+        var (config, _) = ConfigStore.load()
+        let catalog = AppCatalog.scanned(excluding: config.settings.foldersDirectory)
+        var state = ConfigStore.loadState()
+        if args.contains("--from-dock") {
+            let dock = PinnedSync.adopt(config: &config, state: &state, catalog: catalog)
+            try ConfigStore.save(config)
+            ConfigStore.saveState(state)
+            print(green("✓") + " Pinned list replaced with the Dock's (\(dock.count) items). Next: dockfolders apply")
+            return 0
+        }
+        let out = PinnedSync.reconcile(config: &config, state: &state, catalog: catalog)
+        ConfigStore.saveState(state)
+        if out.adopted { try ConfigStore.save(config) }
+        let pending = PinnedSync.hasPendingEdits(config: config, state: state, catalog: catalog)
+
+        print(bold("Dock") + dim("  (\(DockManager.domain), left-hand section)"))
+        for item in out.dock { print("  " + PinnedSync.describe(item)) }
+        if out.dock.isEmpty { print(dim("  (empty)")) }
+        print(bold("Config") + (config.settings.manageFavorites ? "" : dim("  (not written to the Dock)")))
+        for item in config.favorites {
+            let installed = PinnedToken.isSpacer(item) || catalog.find(item, spotlight: false) != nil
+            print("  " + PinnedSync.describe(item) + (installed ? "" : yellow("  (not installed)")))
+        }
+        if config.favorites.isEmpty { print(dim("  (empty)")) }
+        print("")
+        if out.adopted { print(yellow("ℹ") + " Config updated from the Dock.") }
+        if out.conflict {
+            print(yellow("⚠") + " Both changed since the last sync. `dockfolders apply` writes the config's list;")
+            print("  `dockfolders pinned --from-dock` takes the Dock's instead.")
+        } else if pending {
+            print(yellow("ℹ") + " Config edited — `dockfolders apply` writes it to the Dock.")
+        } else {
+            print(green("✓") + " In sync.")
+        }
+        return 0
+    }
+
+    /// Presets bring folders; the pinned apps stay whatever the Dock has unless that section is empty.
     static func cmdPreset(_ args: [String]) throws -> Int32 {
         guard let name = args.first, let preset = Presets.named(name) else {
             print("Usage: dockfolders preset <name>\nAvailable: " + Presets.all.map(\.id).joined(separator: ", "))
             return 1
         }
-        let (old, _) = ConfigStore.load()
-        let cfg = preset.makeConfig(keeping: old.settings)
+        var (old, _) = ConfigStore.load()
+        let catalog = AppCatalog.scanned(excluding: old.settings.foldersDirectory)
+        syncPinned(&old, catalog: catalog, quiet: true)
+        var cfg = preset.makeConfig(keeping: old.settings)
+        if !old.favorites.isEmpty { cfg.favorites = old.favorites }
         try ConfigStore.save(cfg)
         print(green("✓") + " Applied preset \(preset.name) (\(cfg.folders.count) folders). Next: dockfolders apply")
         return 0
@@ -148,9 +222,12 @@ enum CLI {
 
     static func cmdImport(_ args: [String]) throws -> Int32 {
         let path = args.first.map(Paths.expand) ?? Paths.legacyConfigFile.path
-        let cfg = try LegacyImporter.importConfig(at: URL(fileURLWithPath: path))
+        var (old, _) = ConfigStore.load()
+        let catalog = AppCatalog.scanned(excluding: old.settings.foldersDirectory)
+        syncPinned(&old, catalog: catalog, quiet: true)   // remember the Dock's list; the imported one counts as an edit
+        let cfg = try LegacyImporter.importConfig(at: URL(fileURLWithPath: path), into: old.settings)
         try ConfigStore.save(cfg)
-        print(green("✓") + " Imported \(cfg.folders.count) folders, \(cfg.favorites.count) favorites → \(Paths.abbreviate(Paths.configFile.path))")
+        print(green("✓") + " Imported \(cfg.folders.count) folders, \(cfg.pinnedAppNames.count) pinned apps → \(Paths.abbreviate(Paths.configFile.path))")
         return 0
     }
 
@@ -176,6 +253,9 @@ enum CLI {
     static func cmdRemove(_ args: [String]) throws -> Int32 {
         let (config, _) = ConfigStore.load()
         try Organizer.removeFromDock(config: config, deleteFolders: args.contains("--delete-folders")) { print(colorize($0)) }
+        var state = ConfigStore.loadState()
+        state.lastAppliedHash = nil
+        ConfigStore.saveState(state)
         return 0
     }
 
@@ -242,8 +322,9 @@ enum CLI {
           \(green("apply"))  [--config F]   Build folders, render icons and update the Dock
           \(green("reset"))  [backup]       Restore the Dock from the latest (or given) backup
           \(green("discover"))              List installed apps that are not in any folder
-          \(green("list"))                  Show folders and favorites from the config
-          \(green("preset")) <name>         Replace config with a preset: \(Presets.all.map(\.id).joined(separator: ", "))
+          \(green("list"))                  Show folders and pinned apps from the config
+          \(green("pinned")) [--from-dock]  Compare the Dock's pinned apps with the config (or adopt the Dock's)
+          \(green("preset")) <name>         Replace folders with a preset: \(Presets.all.map(\.id).joined(separator: ", "))
           \(green("import")) [config.sh]    Import a DockFolders v1 config.sh
           \(green("backup"))                Back up the Dock now
           \(green("backups"))               List Dock backups
@@ -251,6 +332,11 @@ enum CLI {
           \(green("render-icon")) <folder|emoji> <out.png> [size]
           \(green("export")) [file.json]    Print or save the current config
           \(green("help")), \(green("version"))
+
+        \(bold("PINNED APPS"))
+          The Dock's left-hand section is mirrored into the config: apps you rearrange in the Dock
+          are picked up automatically, edits made in the app or config are written on `apply`.
+          Spacers are list items: "\(PinnedToken.spacer)" and "\(PinnedToken.smallSpacer)".
 
         \(bold("FILES"))
           Config    \(Paths.abbreviate(Paths.configFile.path))
@@ -261,7 +347,7 @@ enum CLI {
 }
 
 enum AppInfo {
-    static let version = "2.0.0"
+    static let version = "2.1.0"
     static let bundleID = "com.geonhee15.dockfolders"
     static let repoURL = URL(string: "https://github.com/geonhee15/dockfolders")!
 }

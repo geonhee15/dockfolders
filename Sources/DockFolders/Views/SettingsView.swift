@@ -55,7 +55,7 @@ struct SettingsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("Remove the folders from the Dock"))
-                        Text(L("Takes the DockFolders tiles out of the Dock (a backup is made first). Favorites are left alone."))
+                        Text(L("Takes the DockFolders tiles out of the Dock (a backup is made first). Pinned apps are left alone."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
