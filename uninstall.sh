@@ -1,37 +1,41 @@
 #!/bin/zsh
-# DockFolders Uninstaller
-
+# DockFolders Uninstaller (v2)
 set -e
 
-GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'
-BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
-
+GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 echo "${BLUE}${BOLD}DockFolders Uninstaller${NC}\n"
 
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dockfolders"
-DOCK_FOLDERS_DIR="$HOME/Applications/DockFolders"
-ICONS_DIR="$HOME/.dock_folder_icons"
+APP=""
+for candidate in "/Applications/DockFolders.app" "$HOME/Applications/DockFolders.app"; do
+  [[ -d "$candidate" ]] && APP="$candidate" && break
+done
 
 echo "${YELLOW}This will remove:${NC}"
-echo "  • $INSTALL_DIR/dockfolders"
-echo "  • $CONFIG_DIR/"
-echo "  • $DOCK_FOLDERS_DIR/"
-echo "  • $ICONS_DIR/"
+[[ -n "$APP" ]] && echo "  • $APP"
+echo "  • $BIN_DIR/dockfolders"
 echo ""
-echo "${YELLOW}This will NOT:${NC}"
-echo "  • Restore your original Dock (run 'dockfolders reset' first if needed)"
-echo "  • Uninstall dockutil, fileicon, or Pillow"
+echo "${YELLOW}Optional (asked below):${NC}"
+echo "  • Take the folders out of the Dock and delete the symlink folders"
+echo "  • $CONFIG_DIR (config, backups, custom icon images)"
 echo ""
 
-read -q "REPLY?Continue? (y/n) "
-echo ""
+read -q "REPLY?Continue? (y/n) "; echo ""
 [[ "$REPLY" != "y" ]] && { echo "Cancelled."; exit 0; }
 
-rm -f "$INSTALL_DIR/dockfolders"
-rm -rf "$CONFIG_DIR"
-rm -rf "$DOCK_FOLDERS_DIR"
-rm -rf "$ICONS_DIR"
+if [[ -n "$APP" ]]; then
+  read -q "REPLY?Remove the folders from the Dock first? (y/n) "; echo ""
+  if [[ "$REPLY" == "y" ]]; then
+    "$APP/Contents/MacOS/DockFolders" remove --delete-folders || true
+  fi
+fi
+
+pkill -x DockFolders 2>/dev/null || true
+[[ -n "$APP" ]] && rm -rf "$APP"
+rm -f "$BIN_DIR/dockfolders"
+
+read -q "REPLY?Delete config and backups in $CONFIG_DIR? (y/n) "; echo ""
+[[ "$REPLY" == "y" ]] && rm -rf "$CONFIG_DIR"
 
 echo "\n${GREEN}✓ Uninstalled${NC}"
-echo "${BLUE}Tip:${NC} To remove brew deps: brew uninstall dockutil fileicon"

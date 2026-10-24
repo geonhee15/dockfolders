@@ -4,18 +4,21 @@
 .LSOverride
 ._*
 
-# Personal configs (use config.example.sh as template)
+# Build output
+build/
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# Personal configs (v1)
 config.sh
 .config/
 
 # Backups
 dock_backup_*/
 *.plist.bak
-
-# Build / cache
-.dock_folder_icons/
-*.pyc
-__pycache__/
 
 # Editors
 .vscode/
